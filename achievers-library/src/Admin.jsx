@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { createRoot } from 'react-dom/client';
+import { supabase } from './supabase';
+import { useState, useMemo, useEffect } from 'react';
 import {
   LayoutDashboard, Users, BookOpen, Armchair, Wallet, FileBarChart,
   Settings, LogOut, Plus, Search, Pencil, Trash2, X, CheckCircle2,
@@ -8,7 +8,6 @@ import {
 import './admin.css';
 
 const KEY = 'achievers_library_members_v1';
-const SEAT_KEY = 'achievers_library_seats_v1';
 const BOOK_KEY = 'achievers_library_books_v1';
 const ISSUE_KEY = 'achievers_library_book_issues_v1';
 
@@ -37,7 +36,8 @@ const plans = [
   { name: 'Welcome Offer', months: 1, fee: 500 },
   { name: 'Monthly', months: 1, fee: 600 },
   { name: '3 Months', months: 3, fee: 1700 },
-  { name: '6 Months', months: 6, fee: 3000 }
+  { name: '6 Months', months: 6, fee: 3000 },
+  { name: '1 Year', months: 12, fee: 5500 }
 ];
 
 const blank = {
@@ -46,7 +46,6 @@ const blank = {
   age: '',
   gender: '',
   joinDate: new Date().toISOString().slice(0, 10),
-  seat: '',
   plan: 'Monthly',
   fee: 600,
   paid: 0,
@@ -60,16 +59,16 @@ function expiryDate(join, months) {
 }
 
 function Admin() {
-  const [logged, setLogged] = useState(
-    sessionStorage.getItem('achievers_admin') === 'yes'
-  );
+  const [logged, setLogged] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [booksLoading, setBooksLoading] = useState(false);
 
   const [user, setUser] = useState('');
   const [pass, setPass] = useState('');
   const [loginErr, setLoginErr] = useState('');
 
   const [members, setMembers] = useState(() => read(KEY, []));
-  const [seats, setSeats] = useState(() => read(SEAT_KEY, {}));
   const [books, setBooks] = useState(() => read(BOOK_KEY, []));
   const [issues, setIssues] = useState(() => read(ISSUE_KEY, []));
 
@@ -80,24 +79,272 @@ function Admin() {
   const [form, setForm] = useState(blank);
   const [notice, setNotice] = useState('');
 
+  useEffect(() => {
+    let alive = true;
+
+    const verifyAdmin = async (session) => {
+      if (!session) {
+        if (alive) {
+          setLogged(false);
+          setAuthLoading(false);
+        }
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', session.user.id)
+        .maybeSingle();
+
+      if (!alive) return;
+
+      if (error || data?.role !== 'admin') {
+        await supabase.auth.signOut();
+        setLogged(false);
+      } else {
+        setLogged(true);
+      }
+      setAuthLoading(false);
+    };
+
+    supabase.auth.getSession().then(({ data }) => verifyAdmin(data.session));
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        verifyAdmin(session);
+      }
+    );
+
+    return () => {
+      alive = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Load member records from Supabase after an admin session is verified.
+  useEffect(() => {
+    if (!logged) return;
+    let cancelled = false;
+
+    const loadMembers = async () => {
+      setMembersLoading(true);
+      const { data, error } = await supabase
+        .from('members')
+        .select('*')
+        .order('id', { ascending: false });
+
+      if (cancelled) return;
+      if (error) {
+        setNotice(`Could not load members: ${error.message}`);
+      } else {
+        // One-time safe migration: preserve existing browser records if DB is empty.
+        let databaseRows = data || [];
+        const cachedMembers = read(KEY, []);
+        if (databaseRows.length === 0 && cachedMembers.length > 0) {
+          const legacyRows = cachedMembers.map(m => ({
+            full_name: String(m.name || '').trim(),
+            phone: String(m.phone || ''),
+            age: m.age ? Number(m.age) : null,
+            gender: m.gender || null,
+            joining_date: m.joinDate || new Date().toISOString().slice(0, 10),
+            membership_plan: m.plan || 'Monthly',
+            membership_end: m.expiry || null,
+            status: m.status || 'Active',
+            fee: Number(m.fee || 0),
+            paid: Number(m.paid || 0),
+            payment_status: m.paymentStatus || (Number(m.paid || 0) >= Number(m.fee || 0) ? 'Paid' : 'Pending')
+          })).filter(m => m.full_name && /^\d{10}$/.test(m.phone));
+          if (legacyRows.length) {
+            const migrated = await supabase.from('members').insert(legacyRows).select('*');
+            if (migrated.error) {
+              setNotice(`Existing browser members were not migrated: ${migrated.error.message}`);
+            } else {
+              databaseRows = migrated.data || [];
+            }
+          }
+        }
+        const mapped = databaseRows.map(row => ({
+          id: row.id,
+          name: row.full_name || '',
+          phone: row.phone || '',
+          age: row.age ?? '',
+          gender: row.gender || '',
+          joinDate: row.joining_date || '',
+          plan: row.membership_plan || 'Monthly',
+          fee: Number(row.fee || 0),
+          paid: Number(row.paid || 0),
+          paymentStatus: row.payment_status || 'Pending',
+          expiry: row.membership_end || '',
+          status: row.status || 'Active'
+        }));
+        setMembers(mapped);
+        save(KEY, mapped);
+      }
+      setMembersLoading(false);
+    };
+
+    loadMembers();
+    return () => { cancelled = true; };
+  }, [logged]);
+
   const updateMembers = v => {
     setMembers(v);
     save(KEY, v);
   };
 
-  const updateSeats = v => {
-    setSeats(v);
-    save(SEAT_KEY, v);
-  };
+  // Load books and issue history from Supabase. Existing browser records are
+  // migrated once when the corresponding database table is empty.
+  useEffect(() => {
+    if (!logged) return;
+    let cancelled = false;
 
-  const updateBooks = v => {
-    setBooks(v);
-    save(BOOK_KEY, v);
-  };
+    const loadLibrary = async () => {
+      setBooksLoading(true);
 
-  const updateIssues = v => {
-    setIssues(v);
-    save(ISSUE_KEY, v);
+      const { data: bookRows, error: bookError } = await supabase
+        .from('books')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: true });
+
+      if (cancelled) return;
+      if (bookError) {
+        setNotice(`Could not load books: ${bookError.message}`);
+        setBooksLoading(false);
+        return;
+      }
+
+      let dbBooks = bookRows || [];
+      const cachedBooks = read(BOOK_KEY, []);
+
+      if (dbBooks.length === 0 && cachedBooks.length > 0) {
+        const legacyBooks = cachedBooks.map(b => ({
+          title: String(b.title || '').trim(),
+          author: String(b.author || 'Unknown'),
+          category: String(b.category || 'General'),
+          total_copies: Math.max(1, Number(b.total || 1)),
+          available_copies: Math.max(0, Math.min(Number(b.available ?? b.total ?? 1), Number(b.total || 1))),
+          is_active: true
+        })).filter(b => b.title);
+
+        if (legacyBooks.length) {
+          const migrated = await supabase.from('books').insert(legacyBooks).select('*');
+          if (migrated.error) {
+            setNotice(`Books are not yet in Supabase: ${migrated.error.message}`);
+          } else {
+            dbBooks = migrated.data || [];
+          }
+        }
+      }
+
+      const mappedBooks = dbBooks.map(row => ({
+        id: row.id,
+        title: row.title || '',
+        author: row.author || 'Unknown',
+        category: row.category || 'General',
+        total: Number(row.total_copies || 0),
+        available: Number(row.available_copies || 0)
+      }));
+
+      setBooks(mappedBooks);
+      save(BOOK_KEY, mappedBooks);
+
+      let issueQuery = await supabase
+        .from('book_issues')
+        .select('*, books(title), members(full_name)')
+        .order('issue_date', { ascending: false });
+
+      if (cancelled) return;
+
+      // Migrate old issue history only when the database has no issue rows.
+      const cachedIssues = read(ISSUE_KEY, []);
+      if (!issueQuery.error && (issueQuery.data || []).length === 0 && cachedIssues.length > 0) {
+        const cachedBooksForIssues = read(BOOK_KEY, []);
+        const legacyIssues = cachedIssues.map(issue => {
+          const oldBook = cachedBooksForIssues.find(b => String(b.id) === String(issue.bookId));
+          const newBook = mappedBooks.find(b => b.title === oldBook?.title);
+          const member = (data || []).find(m => String(m.id) === String(issue.memberId));
+          if (!newBook || !member) return null;
+          return {
+            book_id: newBook.id,
+            member_id: member.id,
+            issue_date: issue.issueDate || new Date().toISOString().slice(0, 10),
+            due_date: issue.dueDate || new Date().toISOString().slice(0, 10),
+            return_date: issue.returnDate || null,
+            status: issue.status || 'Issued'
+          };
+        }).filter(Boolean);
+
+        if (legacyIssues.length) {
+          const migratedIssues = await supabase.from('book_issues').insert(legacyIssues).select('*, books(title), members(full_name)');
+          if (!migratedIssues.error) issueQuery = { data: migratedIssues.data, error: null };
+          else setNotice(`Books migrated, but old issue history could not be migrated: ${migratedIssues.error.message}`);
+        }
+      }
+
+      const { data: issueRows, error: issueError } = issueQuery;
+      if (issueError) {
+        setNotice(`Books loaded, but issue history could not load: ${issueError.message}`);
+        setIssues([]);
+      } else {
+        const mappedIssues = (issueRows || []).map(row => ({
+          id: row.id,
+          bookId: row.book_id,
+          bookTitle: row.books?.title || 'Book',
+          memberId: row.member_id,
+          memberName: row.members?.full_name || 'Member',
+          issueDate: row.issue_date,
+          dueDate: row.due_date,
+          returnDate: row.return_date || '',
+          status: row.status || 'Issued'
+        }));
+        setIssues(mappedIssues);
+        save(ISSUE_KEY, mappedIssues);
+      }
+
+      setBooksLoading(false);
+    };
+
+    loadLibrary();
+    return () => { cancelled = true; };
+  }, [logged]);
+
+  const refreshLibrary = async () => {
+    const { data: bookRows, error: bookError } = await supabase
+      .from('books').select('*').eq('is_active', true).order('created_at', { ascending: true });
+    if (bookError) throw bookError;
+
+    const mappedBooks = (bookRows || []).map(row => ({
+      id: row.id,
+      title: row.title || '',
+      author: row.author || 'Unknown',
+      category: row.category || 'General',
+      total: Number(row.total_copies || 0),
+      available: Number(row.available_copies || 0)
+    }));
+    setBooks(mappedBooks);
+    save(BOOK_KEY, mappedBooks);
+
+    const { data: issueRows, error: issueError } = await supabase
+      .from('book_issues')
+      .select('*, books(title), members(full_name)')
+      .order('issue_date', { ascending: false });
+    if (issueError) throw issueError;
+
+    const mappedIssues = (issueRows || []).map(row => ({
+      id: row.id,
+      bookId: row.book_id,
+      bookTitle: row.books?.title || 'Book',
+      memberId: row.member_id,
+      memberName: row.members?.full_name || 'Member',
+      issueDate: row.issue_date,
+      dueDate: row.due_date,
+      returnDate: row.return_date || '',
+      status: row.status || 'Issued'
+    }));
+    setIssues(mappedIssues);
+    save(ISSUE_KEY, mappedIssues);
   };
 
   const active = members.filter(
@@ -115,7 +362,7 @@ function Admin() {
 
   const filtered = useMemo(
     () => members.filter(m =>
-      `${m.name} ${m.phone} ${m.seat} ${m.id}`
+      `${m.name} ${m.phone} ${m.id}`
         .toLowerCase().includes(search.toLowerCase())
     ),
     [members, search]
@@ -133,8 +380,8 @@ function Admin() {
     setModal(true);
   };
 
-  // ADD / UPDATE MEMBER
-  const submit = e => {
+  // ADD / UPDATE MEMBER in Supabase.
+  const submit = async e => {
     e.preventDefault();
 
     if (!/^\d{10}$/.test(form.phone)) {
@@ -142,106 +389,97 @@ function Admin() {
       return;
     }
 
-    if (!form.seat || Number(form.seat) < 1 || Number(form.seat) > 34) {
-      setNotice('Choose a seat between 1 and 34.');
+    const p = plans.find(item => item.name === form.plan) || plans[1];
+    const fee = Number(form.fee || p.fee);
+    const paid = Number(form.paid || 0);
+    const expiry = expiryDate(form.joinDate, p.months);
+    const payload = {
+      full_name: form.name.trim(),
+      phone: form.phone,
+      age: form.age ? Number(form.age) : null,
+      gender: form.gender || null,
+      joining_date: form.joinDate,
+      membership_plan: form.plan,
+      membership_end: expiry,
+      status: 'Active',
+      fee,
+      paid,
+      payment_status: paid >= fee ? 'Paid' : paid > 0 ? 'Partial' : 'Pending'
+    };
+
+    const result = editing
+      ? await supabase.from('members').update(payload).eq('id', editing).select().single()
+      : await supabase.from('members').insert(payload).select().single();
+
+    if (result.error) {
+      setNotice(`Could not save member: ${result.error.message}`);
       return;
     }
 
-    const conflict = members.find(m =>
-      m.id !== editing &&
-      String(m.seat) === String(form.seat) &&
-      m.status !== 'Inactive' &&
-      m.expiry >= new Date().toISOString().slice(0, 10)
-    );
-
-    if (conflict) {
-      setNotice('This seat is already assigned.');
-      return;
-    }
-
-    const p = plans.find(p => p.name === form.plan) || plans[1];
-
-    const generatedId = editing || nextId(members);
-
-    if (generatedId === null) {
-      setNotice('Member ID limit reached. Maximum ID is 1000.');
-      return;
-    }
-
-    const row = {
-      ...form,
-      id: generatedId,
-      fee: Number(form.fee || p.fee),
-      paid: Number(form.paid || 0),
-      months: p.months,
-      expiry: expiryDate(form.joinDate, p.months),
-      status: 'Active'
+    const row = result.data;
+    const mapped = {
+      id: row.id,
+      name: row.full_name || '',
+      phone: row.phone || '',
+      age: row.age ?? '',
+      gender: row.gender || '',
+      joinDate: row.joining_date || '',
+      plan: row.membership_plan || 'Monthly',
+      fee: Number(row.fee || 0),
+      paid: Number(row.paid || 0),
+      paymentStatus: row.payment_status || 'Pending',
+      expiry: row.membership_end || '',
+      status: row.status || 'Active'
     };
 
     const next = editing
-      ? members.map(m => m.id === editing ? row : m)
-      : [row, ...members];
-
-    updateMembers(next);
+      ? members.map(m => String(m.id) === String(editing) ? mapped : m)
+      : [mapped, ...members];
+    setMembers(next);
+    save(KEY, next);
     setModal(false);
-
-    setNotice(
-      editing
-        ? 'Member updated successfully.'
-        : `Member added successfully. Member ID: ${generatedId}`
-    );
+    setNotice(editing ? 'Member updated in database.' : `Member saved in database. Member ID: ${row.id}`);
   };
 
-  const remove = id => {
-    if (confirm('Delete this member record?')) {
-      updateMembers(members.filter(m => m.id !== id));
-      setNotice('Member deleted.');
+  const remove = async id => {
+    if (!confirm('Delete this member record? This cannot be undone.')) return;
+    const { error } = await supabase.from('members').delete().eq('id', id);
+    if (error) {
+      setNotice(`Could not delete member: ${error.message}`);
+      return;
     }
+    const next = members.filter(m => String(m.id) !== String(id));
+    setMembers(next);
+    save(KEY, next);
+    setNotice('Member deleted from database.');
   };
 
-  // COLLECT FEES
-  const collect = m => {
-    const amount = prompt(
-      `Enter fee received from ${m.name}. Pending: ₹${Math.max(0, m.fee - m.paid)}`
-    );
-
+  // COLLECT FEES: update member's paid balance in Supabase.
+  const collect = async m => {
+    const amount = prompt(`Enter fee received from ${m.name}. Pending: ₹${Math.max(0, Number(m.fee) - Number(m.paid))}`);
     if (amount === null) return;
-
     const n = Number(amount);
-
     if (!Number.isFinite(n) || n <= 0) {
       setNotice('Enter a valid amount.');
       return;
     }
-
-    updateMembers(members.map(x =>
-      x.id === m.id
-        ? {
-            ...x,
-            paid: Number(x.paid || 0) + n,
-            paymentStatus:
-              Number(x.paid || 0) + n >= Number(x.fee)
-                ? 'Paid'
-                : 'Partial'
-          }
-        : x
-    ));
-
-    setNotice('Payment recorded.');
-  };
-
-  // ADD BOOK: BOOK ID 1 TO 1000
-  const addBook = () => {
-    const id = nextId(books);
-
-    if (id === null) {
-      setNotice('Book ID limit reached. Maximum ID is 1000.');
+    const paid = Number(m.paid || 0) + n;
+    const paymentStatus = paid >= Number(m.fee) ? 'Paid' : 'Partial';
+    const { error } = await supabase.from('members').update({ paid, payment_status: paymentStatus }).eq('id', m.id);
+    if (error) {
+      setNotice(`Could not record fee: ${error.message}`);
       return;
     }
+    const next = members.map(x => String(x.id) === String(m.id) ? { ...x, paid, paymentStatus } : x);
+    setMembers(next);
+    save(KEY, next);
+    setNotice('Fee balance updated in database. Payment ledger entry will be integrated next.');
+  };
 
+  // BOOKS: persistent Supabase CRUD.
+  const addBook = async () => {
     const title = prompt('Book title:');
     if (!title?.trim()) return;
-
     const author = prompt('Author name:') || 'Unknown';
     const category = prompt('Category:') || 'General';
     const copies = Number(prompt('Total copies:', '1'));
@@ -251,136 +489,220 @@ function Admin() {
       return;
     }
 
-    updateBooks([
-      {
-        id,
-        title: title.trim(),
-        author,
-        category,
-        total: copies,
-        available: copies
-      },
-      ...books
-    ]);
+    const { error } = await supabase.from('books').insert({
+      title: title.trim(),
+      author,
+      category,
+      total_copies: copies,
+      available_copies: copies,
+      is_active: true
+    });
 
-    setNotice(`Book added successfully. Book ID: ${id}`);
+    if (error) {
+      setNotice(`Could not add book: ${error.message}`);
+      return;
+    }
+
+    try {
+      await refreshLibrary();
+      setNotice('Book saved in Supabase successfully.');
+    } catch (refreshError) {
+      setNotice(`Book was saved, but refresh failed: ${refreshError.message}`);
+    }
   };
 
-  // ISSUE BOOK USING BOOK ID AND MEMBER ID
-  const issueBook = () => {
+  const editBook = async book => {
+    const title = prompt('Book title:', book.title);
+    if (!title?.trim()) return;
+    const author = prompt('Author name:', book.author) ?? book.author;
+    const category = prompt('Category:', book.category) ?? book.category;
+    const total = Number(prompt('Total copies:', String(book.total)));
+
+    if (!Number.isInteger(total) || total < 1 || total < (book.total - book.available)) {
+      setNotice('Total copies cannot be less than the number of issued copies.');
+      return;
+    }
+
+    const available = total - (book.total - book.available);
+    const { error } = await supabase.from('books').update({
+      title: title.trim(), author, category,
+      total_copies: total, available_copies: available
+    }).eq('id', book.id);
+
+    if (error) {
+      setNotice(`Could not update book: ${error.message}`);
+      return;
+    }
+
+    try {
+      await refreshLibrary();
+      setNotice('Book updated in Supabase.');
+    } catch (refreshError) {
+      setNotice(`Book updated, but refresh failed: ${refreshError.message}`);
+    }
+  };
+
+  const deleteBook = async book => {
+    if (!confirm(`Delete "${book.title}" from the inventory?`)) return;
+
+    const { count, error: checkError } = await supabase
+      .from('book_issues')
+      .select('id', { count: 'exact', head: true })
+      .eq('book_id', book.id);
+
+    if (checkError) {
+      setNotice(`Could not check issue history: ${checkError.message}`);
+      return;
+    }
+    if (count > 0) {
+      setNotice('This book has issue history, so it cannot be deleted. Keep it in inventory instead.');
+      return;
+    }
+
+    const { error } = await supabase.from('books').delete().eq('id', book.id);
+    if (error) {
+      setNotice(`Could not delete book: ${error.message}`);
+      return;
+    }
+
+    try {
+      await refreshLibrary();
+      setNotice('Book deleted from Supabase.');
+    } catch (refreshError) {
+      setNotice(`Book deleted, but refresh failed: ${refreshError.message}`);
+    }
+  };
+
+  // Issue a book using UUID book IDs and BIGINT member IDs.
+  const issueBook = async () => {
     if (!active.length) {
       setNotice('Add an active member before issuing a book.');
       return;
     }
 
     const availableBooks = books.filter(b => b.available > 0);
-
     if (!availableBooks.length) {
       setNotice('No books are currently available.');
       return;
     }
 
-    const bookId = prompt(
+    const bookChoice = prompt(
       'Available Books:\n' +
-      availableBooks.map(b =>
-        `${b.id}: ${b.title} (${b.available} available)`
-      ).join('\n') +
-      '\n\nEnter Book ID:'
+      availableBooks.map(b => `#${books.findIndex(item => item.id === b.id) + 1}: ${b.title} (${b.available} available)`).join('\n') +
+      '\n\nEnter the short Book ID (for example 1):'
     );
+    if (bookChoice === null) return;
 
-    if (bookId === null) return;
-
-    const book = books.find(b => String(b.id) === bookId.trim());
-
+    const shortBookId = Number(bookChoice.trim().replace(/^#/, ''));
+    const book = Number.isInteger(shortBookId) && shortBookId > 0
+      ? books[shortBookId - 1]
+      : availableBooks.find(b => b.id === bookChoice.trim());
     if (!book || book.available < 1) {
-      setNotice('Invalid Book ID or no copies available.');
+      setNotice('Invalid Book ID or no available copy.');
       return;
     }
 
-    const memberId = prompt(
+    const memberChoice = prompt(
       'Active Members:\n' +
       active.map(m => `${m.id}: ${m.name}`).join('\n') +
       '\n\nEnter Member ID:'
     );
+    if (memberChoice === null) return;
 
-    if (memberId === null) return;
-
-    const member = active.find(
-      m => String(m.id) === memberId.trim()
-    );
-
+    const member = active.find(m => String(m.id) === memberChoice.trim());
     if (!member) {
       setNotice('Invalid active Member ID.');
       return;
     }
 
     const today = new Date().toISOString().slice(0, 10);
-
     const due = prompt(
       'Due date (YYYY-MM-DD):',
-      new Date(Date.now() + 14 * 86400000)
-        .toISOString().slice(0, 10)
+      new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)
     );
-
     if (!due) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || due < today) {
+      setNotice('Enter a valid due date in YYYY-MM-DD format.');
+      return;
+    }
 
-    updateBooks(books.map(b =>
-      b.id === book.id
-        ? { ...b, available: b.available - 1 }
-        : b
-    ));
+    const { data: currentBook, error: readError } = await supabase
+      .from('books').select('available_copies').eq('id', book.id).single();
+    if (readError || !currentBook || currentBook.available_copies < 1) {
+      setNotice(readError?.message || 'No available copy remains for this book.');
+      return;
+    }
 
-    updateIssues([
-      {
-        id: Date.now(),
-        bookId: book.id,
-        bookTitle: book.title,
-        memberId: member.id,
-        memberName: member.name,
-        issueDate: today,
-        dueDate: due,
-        returnDate: '',
-        status: 'Issued'
-      },
-      ...issues
-    ]);
+    const { error: issueError } = await supabase.from('book_issues').insert({
+      book_id: book.id,
+      member_id: member.id,
+      issue_date: today,
+      due_date: due,
+      status: 'Issued'
+    });
+    if (issueError) {
+      setNotice(`Could not issue book: ${issueError.message}`);
+      return;
+    }
 
-    setNotice(`Book issued to ${member.name}.`);
+    const { error: stockError } = await supabase.from('books')
+      .update({ available_copies: currentBook.available_copies - 1 })
+      .eq('id', book.id);
+    if (stockError) {
+      setNotice(`Issue record saved, but stock update failed: ${stockError.message}. Please check inventory.`);
+      return;
+    }
+
+    try {
+      await refreshLibrary();
+      setNotice(`Book issued to ${member.name}.`);
+    } catch (refreshError) {
+      setNotice(`Book issued, but refresh failed: ${refreshError.message}`);
+    }
   };
 
-  // RETURN BOOK
-  const returnBook = id => {
-    const issue = issues.find(x => x.id === id);
-
+  const returnBook = async id => {
+    const issue = issues.find(x => String(x.id) === String(id));
     if (!issue || issue.status === 'Returned') return;
+    if (!confirm(`Mark "${issue.bookTitle}" as returned by ${issue.memberName}?`)) return;
 
-    updateIssues(issues.map(x =>
-      x.id === id
-        ? {
-            ...x,
-            status: 'Returned',
-            returnDate: new Date().toISOString().slice(0, 10)
-          }
-        : x
-    ));
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: bookRow, error: bookError } = await supabase
+      .from('books').select('available_copies, total_copies').eq('id', issue.bookId).single();
+    if (bookError || !bookRow) {
+      setNotice(bookError?.message || 'Could not find this book in inventory.');
+      return;
+    }
 
-    updateBooks(books.map(b =>
-      b.id === issue.bookId
-        ? {
-            ...b,
-            available: Math.min(b.total, b.available + 1)
-          }
-        : b
-    ));
+    const { error: issueError } = await supabase.from('book_issues')
+      .update({ status: 'Returned', return_date: today })
+      .eq('id', id);
+    if (issueError) {
+      setNotice(`Could not return book: ${issueError.message}`);
+      return;
+    }
 
-    setNotice('Book returned successfully.');
+    const { error: stockError } = await supabase.from('books')
+      .update({ available_copies: Math.min(bookRow.total_copies, bookRow.available_copies + 1) })
+      .eq('id', issue.bookId);
+    if (stockError) {
+      setNotice(`Return was recorded, but stock update failed: ${stockError.message}. Please check inventory.`);
+      return;
+    }
+
+    try {
+      await refreshLibrary();
+      setNotice('Book returned successfully and inventory updated.');
+    } catch (refreshError) {
+      setNotice(`Book returned, but refresh failed: ${refreshError.message}`);
+    }
   };
 
   const exportCsv = () => {
     const rows = [
-      ['Member ID', 'Name', 'Mobile', 'Seat', 'Join Date', 'Plan', 'Fee', 'Paid', 'Pending', 'Expiry'],
+      ['Member ID', 'Name', 'Mobile', 'Join Date', 'Plan', 'Fee', 'Paid', 'Pending', 'Expiry'],
       ...members.map(m => [
-        m.id, m.name, m.phone, m.seat, m.joinDate,
+        m.id, m.name, m.phone, m.joinDate,
         m.plan, m.fee, m.paid,
         Math.max(0, m.fee - m.paid), m.expiry
       ])
@@ -397,43 +719,111 @@ function Admin() {
     URL.revokeObjectURL(a.href);
   };
 
-  // LOGIN
+  const exportPdf = () => {
+    const reportWindow = window.open('', '_blank', 'width=1000,height=750');
+    if (!reportWindow) {
+      setNotice('Please allow pop-ups to download the PDF report.');
+      return;
+    }
+
+    const safe = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+    const money = value => `₹${Number(value || 0).toLocaleString('en-IN')}`;
+    const reportRows = members.map(m => `
+      <tr>
+        <td>#${safe(m.id)}</td><td>${safe(m.name)}</td><td>${safe(m.phone)}</td>
+        <td>${safe(m.plan)}</td><td>${money(m.fee)}</td><td>${money(m.paid)}</td>
+        <td>${money(Math.max(0, Number(m.fee || 0) - Number(m.paid || 0)))}</td>
+        <td>${safe(m.expiry)}</td>
+      </tr>`).join('');
+
+    reportWindow.document.write(`<!doctype html><html><head><title>Achievers Library Report</title>
+      <meta charset="utf-8"><style>
+      *{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#17233b;padding:28px}
+      h1{margin:0 0 6px;font-size:25px}p{color:#64748b;margin:0 0 22px}
+      .summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0 26px}
+      .card{border:1px solid #dbe2ec;border-radius:8px;padding:13px}
+      .card small{display:block;color:#64748b;margin-bottom:8px}.card strong{font-size:19px}
+      table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:10px 8px;border-bottom:1px solid #e2e8f0;text-align:left}
+      th{background:#f1f5f9;color:#475569}footer{margin-top:25px;color:#64748b;font-size:11px}
+      @media print{body{padding:0}.no-print{display:none}}
+      </style></head><body>
+      <h1>Achievers Library</h1><p>Member & Fee Summary · Generated ${safe(new Date().toLocaleString('en-IN'))}</p>
+      <div class="summary">
+        <div class="card"><small>Total admissions</small><strong>${members.length}</strong></div>
+        <div class="card"><small>Active members</small><strong>${active.length}</strong></div>
+        <div class="card"><small>Fees received</small><strong>${money(collected)}</strong></div>
+        <div class="card"><small>Fees pending</small><strong>${money(pending)}</strong></div>
+      </div>
+      <h3>Member Details</h3><table><thead><tr>
+      <th>Member ID</th><th>Name</th><th>Mobile</th><th>Plan</th><th>Fee</th><th>Paid</th><th>Pending</th><th>Expiry</th>
+      </tr></thead><tbody>${reportRows || '<tr><td colspan="8">No members found.</td></tr>'}</tbody></table>
+      <footer>Achievers Library · Umranala, Chhindwara, Madhya Pradesh</footer>
+      <script>window.onload=()=>{window.focus();window.print();};</script>
+      </body></html>`);
+    reportWindow.document.close();
+  };
+
+  // LOGIN: Supabase Auth + admin role check.
+  if (authLoading) {
+    return <div className="admin-login-wrap"><p>Checking admin session...</p></div>;
+  }
+
   if (!logged) {
     return (
       <div className="admin-login-wrap">
-        <form className="admin-login" onSubmit={e => {
+        <form className="admin-login" onSubmit={async e => {
           e.preventDefault();
+          setLoginErr('');
 
-          if (user === 'admin' && pass === 'Achievers@123') {
-            sessionStorage.setItem('achievers_admin', 'yes');
-            setLogged(true);
-            setLoginErr('');
-          } else {
-            setLoginErr('Incorrect username or password');
+          const { data, error } = await supabase.auth.signInWithPassword({
+            email: user.trim(),
+            password: pass
+          });
+
+          if (error) {
+            setLoginErr(error.message || 'Email or password is incorrect.');
+            return;
           }
+
+          const { data: profile, error: profileError } = await supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', data.user.id)
+            .maybeSingle();
+
+          if (profileError || profile?.role !== 'admin') {
+            await supabase.auth.signOut();
+            setLoginErr('This account does not have library admin access.');
+            return;
+          }
+
+          setLogged(true);
+          setPass('');
         }}>
           <div className="admin-logo">AL</div>
           <span className="admin-eyebrow">ACHIEVERS LIBRARY · UMRANALA</span>
           <h1>Admin Login</h1>
-          <p>Sign in to manage members, books, seats and fees.</p>
+          <p>Kunal Sahu · Manage members, books and fees.</p>
 
           <label>
-            Username
-            <input value={user} onChange={e => setUser(e.target.value)} required />
+            Email address
+            <input type="email" value={user} onChange={e => setUser(e.target.value)} required autoComplete="username" />
           </label>
 
           <label>
             Password
-            <input type="password" value={pass} onChange={e => setPass(e.target.value)} required />
+            <input type="password" value={pass} onChange={e => setPass(e.target.value)} required autoComplete="current-password" />
           </label>
 
           {loginErr && <div className="admin-error">{loginErr}</div>}
 
-          <button className="admin-primary">Sign in to dashboard</button>
+          <button className="admin-primary" type="submit">Sign in to dashboard</button>
           <a href="/" className="back-site">
             <ArrowLeft size={16}/> Back to website
           </a>
-          <small>Demo login: admin / Achievers@123</small>
+          <small>Sign in with an authorized library admin account.</small>
         </form>
       </div>
     );
@@ -443,7 +833,6 @@ function Admin() {
     ['Dashboard', LayoutDashboard],
     ['Members', Users],
     ['Books', BookOpen],
-    ['Seat Management', Armchair],
     ['Fee Management', Wallet],
     ['Reports', FileBarChart],
     ['Settings', Settings]
@@ -454,7 +843,7 @@ function Admin() {
       <aside className="admin-sidebar">
         <a className="admin-brand" href="/">
           <span>AL</span>
-          <b>ACHIEVERS<small>LIBRARY ADMIN</small></b>
+          <b>KUNAL SAHU<small>LIBRARY ADMIN</small></b>
         </a>
 
         <div className="admin-side-label">WORKSPACE</div>
@@ -471,8 +860,8 @@ function Admin() {
 
         <div className="sidebar-bottom">
           <a href="/">← View website</a>
-          <button onClick={() => {
-            sessionStorage.removeItem('achievers_admin');
+          <button onClick={async () => {
+            await supabase.auth.signOut();
             setLogged(false);
           }}>
             <LogOut size={17}/> Logout
@@ -529,19 +918,7 @@ function Admin() {
                 <MemberTable rows={members.slice(0, 5)} edit={openEdit} collect={collect} remove={remove}/>
               </section>
 
-              <section className="admin-card seat-summary">
-                <h3>Seat overview</h3>
-                <p>34 total seats · Full-day membership</p>
-                <div className="seat-summary-num">
-                  <b>{active.length}</b><span>/ 34 assigned</span>
-                </div>
-                <div className="admin-seat-mini">
-                  {Array.from({ length: 34 }, (_, i) => {
-                    const m = active.find(x => Number(x.seat) === i + 1);
-                    return <span key={i} className={m ? 'taken' : ''}>{i + 1}</span>;
-                  })}
-                </div>
-              </section>
+              
             </div>
           </>
         )}
@@ -556,9 +933,9 @@ function Admin() {
             <div className="admin-toolbar">
               <div className="admin-search">
                 <Search size={17}/>
-                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search ID, name, mobile or seat"/>
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search ID, name or mobile"/>
               </div>
-              <span>{filtered.length} records</span>
+              <span>{membersLoading ? 'Loading from database…' : `${filtered.length} records · Supabase`}</span>
             </div>
 
             <MemberTable rows={filtered} edit={openEdit} collect={collect} remove={remove}/>
@@ -599,9 +976,9 @@ function Admin() {
                   <tbody>
                     {books.length === 0 ? (
                       <tr><td colSpan="6" className="empty-row">No books added yet.</td></tr>
-                    ) : books.map(b => (
+                    ) : books.map((b, index) => (
                       <tr key={b.id}>
-                        <td><span className="seat-pill">#{b.id}</span></td>
+                        <td><span className="seat-pill">#{index + 1}</span></td>
                         <td><b>{b.title}</b></td>
                         <td>{b.author}</td>
                         <td>{b.category}</td>
@@ -631,7 +1008,7 @@ function Admin() {
                       <tr><td colSpan="8" className="empty-row">No books issued yet.</td></tr>
                     ) : issues.map(i => (
                       <tr key={i.id}>
-                        <td>#{i.bookId}</td>
+                        <td>#{Math.max(0, books.findIndex(b => b.id === i.bookId) + 1)}</td>
                         <td>{i.bookTitle}</td>
                         <td>#{i.memberId}</td>
                         <td>{i.memberName}</td>
@@ -652,24 +1029,6 @@ function Admin() {
           </>
         )}
 
-        {tab === 'Seat Management' && (
-          <section className="admin-card full-card">
-            <h3>Seat Management</h3>
-            <p className="muted">34 seats · Active memberships reserve their assigned seat.</p>
-            <div className="admin-seat-grid">
-              {Array.from({ length: 34 }, (_, i) => {
-                const m = active.find(x => Number(x.seat) === i + 1);
-                return (
-                  <div className={m ? 'assigned' : ''} key={i}>
-                    <b>{String(i + 1).padStart(2, '0')}</b>
-                    <small>{m ? m.name : 'Available'}</small>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
         {tab === 'Fee Management' && (
           <section className="admin-card full-card">
             <h3>Fee Management</h3>
@@ -684,8 +1043,11 @@ function Admin() {
         {tab === 'Reports' && (
           <section className="admin-card full-card">
             <div className="admin-card-head">
-              <div><h3>Library Reports</h3><p>Download member and fee summary as CSV.</p></div>
-              <button className="admin-primary" onClick={exportCsv}><Download size={17}/> Export CSV</button>
+              <div><h3>Library Reports</h3><p>Download member and fee summary as CSV or PDF.</p></div>
+              <div className="admin-report-actions">
+                <button className="admin-secondary" onClick={exportPdf}><Download size={17}/> Download PDF</button>
+                <button className="admin-primary" onClick={exportCsv}><Download size={17}/> Export CSV</button>
+              </div>
             </div>
 
             <div className="report-grid">
@@ -704,11 +1066,11 @@ function Admin() {
               <div><b>Library name</b><span>Achievers Library</span></div>
               <div><b>Address</b><span>Umranala, Chhindwara, Madhya Pradesh</span></div>
               <div><b>Contact</b><span>6267233797</span></div>
-              <div><b>Total seats</b><span>34</span></div>
-              <div><b>Membership plans</b><span>₹500 welcome · ₹600 monthly · ₹1,700 / 3 months · ₹3,000 / 6 months</span></div>
+              
+              <div><b>Membership plans</b><span>₹500 welcome · ₹600 monthly · ₹1,700 / 3 months · ₹3,000 / 6 months · ₹5,500 / year</span></div>
             </div>
             <p className="admin-warning">
-              Records are currently saved in this browser only.
+              Members, books and issue history are saved in the Supabase database.
             </p>
           </section>
         )}
@@ -744,22 +1106,6 @@ function Admin() {
 
               <label>Joining date *
                 <input type="date" required value={form.joinDate} onChange={e => setForm({ ...form, joinDate: e.target.value })}/>
-              </label>
-
-              <label>Seat number *
-                <select required value={form.seat} onChange={e => setForm({ ...form, seat: e.target.value })}>
-                  <option value="">Select seat</option>
-                  {Array.from({ length: 34 }, (_, i) => {
-                    const n = i + 1;
-                    const busy = members.some(m =>
-                      m.id !== editing &&
-                      Number(m.seat) === n &&
-                      m.status !== 'Inactive' &&
-                      m.expiry >= new Date().toISOString().slice(0, 10)
-                    );
-                    return <option key={n} value={n} disabled={busy}>Seat {n}{busy ? ' (Assigned)' : ''}</option>;
-                  })}
-                </select>
               </label>
 
               <label>Membership plan
@@ -798,7 +1144,7 @@ function MemberTable({ rows, edit, collect, remove }) {
         <thead>
           <tr>
             <th>Member ID</th><th>Member</th><th>Mobile</th>
-            <th>Seat</th><th>Plan / Expiry</th><th>Fee status</th><th>Actions</th>
+            <th>Plan / Expiry</th><th>Fee status</th><th>Actions</th>
           </tr>
         </thead>
 
@@ -810,7 +1156,6 @@ function MemberTable({ rows, edit, collect, remove }) {
               <td><span className="seat-pill">#{m.id}</span></td>
               <td><b>{m.name}</b><small>{m.gender || 'Student'} {m.age ? `· ${m.age} yrs` : ''}</small></td>
               <td>{m.phone}</td>
-              <td><span className="seat-pill">{m.seat}</span></td>
               <td>{m.plan}<small>Expires {m.expiry}</small></td>
               <td>
                 <span className={`status-pill ${Number(m.paid) >= Number(m.fee) ? 'paid' : 'pending'}`}>
