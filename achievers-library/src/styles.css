@@ -18,3 +18,78 @@
 .btn-primary:hover,.nav-cta:hover,.btn-light:hover{transform:translateY(-3px);box-shadow:0 12px 25px rgba(189,139,73,.25)}
 .hero h1 span,.section-heading h2 span{background:linear-gradient(110deg,#bd8b49,#e0b77d 55%,#9d7040);-webkit-background-clip:text;background-clip:text;color:transparent}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+
+
+/* Live catalogue and mobile-first finishing pass */
+.books-intro{margin:12px 0 0;color:#8490a1;font-size:13px;line-height:1.6}
+.books-state{min-height:190px;border:1px dashed #dfe5eb;border-radius:16px;background:#fafbfd;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:28px;text-align:center;color:#8290a2;font-size:13px}
+.books-state strong{font:700 17px Manrope,sans-serif;color:#17243e}
+.books-state-error{color:#9a4b42}
+.book-cover{position:relative;overflow:hidden;isolation:isolate}
+.book-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.book-cover-title{font:800 13px/1.35 Manrope,sans-serif;max-width:90%;overflow-wrap:anywhere}
+.availability-pill{display:inline-flex!important;width:max-content;max-width:100%;font-size:9px!important;font-weight:700;padding:6px 8px!important;border-radius:999px!important;white-space:normal}
+.availability-pill.available{background:#eaf5ed!important;color:#287447!important}
+.availability-pill.unavailable{background:#fff0ed!important;color:#a34c3e!important}
+.footer-admin-link{color:#c28a3e;text-decoration:none;font-weight:700;font-size:13px}
+@media(max-width:650px){
+  .section-wrap,.topbar{width:calc(100% - 32px)}
+  .topbar{height:68px;gap:8px;position:relative}
+  .brand{font-size:17px;gap:8px}
+  .brand-mark{width:36px;height:36px;border-radius:10px}
+  .header-contact{margin-left:auto;margin-right:8px;gap:2px;align-items:flex-end}
+  .header-contact a:first-child{font-size:10px}
+  .header-contact a:last-child{font-size:8px}
+  .mobile-toggle{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:#f5f2ed}
+  .nav-links{top:62px;left:0;right:0}
+  .hero{padding-top:36px;padding-bottom:30px}
+  .hero h1{font-size:clamp(39px,11vw,49px);line-height:1.08;letter-spacing:-2.5px}
+  .hero-desc{font-size:13px;line-height:1.75}
+  .hero-actions{align-items:stretch;gap:10px}
+  .btn-primary{min-height:46px}
+  .hero-visual{height:320px;margin-top:8px}
+  .photo-card{width:min(100%,310px);height:300px;transform:none}
+  .photo-card:hover{transform:none}
+  .visual-glow{width:250px;height:250px;right:0;top:30px}
+  .hero-stamp{width:58px;height:58px;left:-3px;top:18px}
+  .quick-stats{margin-bottom:58px;gap:16px 4px}
+  .stat{padding-left:4px;gap:8px}
+  .stat-icon{width:32px;height:32px;flex:0 0 32px}
+  .stat strong{font-size:12px}
+  .stat small{font-size:9px}
+  .section{padding-bottom:62px}
+  .section-heading h2,.contact h2{font-size:clamp(31px,8vw,37px);letter-spacing:-1.5px}
+  .section-heading>p{font-size:12px}
+  .books-heading{display:flex;flex-direction:column;align-items:stretch;gap:18px}
+  .book-search{width:100%;height:48px;margin:0}
+  .books-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+  .book-card{min-width:0;padding:9px;border-radius:12px}
+  .book-cover{height:clamp(125px,39vw,165px);padding:10px}
+  .book-cover-title{font-size:11px}
+  .book-info{padding:10px 1px 3px}
+  .book-info h3{font-size:12px;overflow-wrap:anywhere}
+  .book-info p{font-size:10px;line-height:1.4}
+  .availability-pill{font-size:8px!important;padding:5px 7px!important}
+  .photo-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .photo-gallery img{height:clamp(105px,32vw,145px)}
+  .pricing-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .price-card{padding:17px 8px}
+  .price-card strong{font-size:23px}
+  .price-card h3{font-size:11px;line-height:1.35}
+  .membership-band{padding:58px 0}
+  .membership-inner h2{font-size:36px;letter-spacing:-1.8px}
+  .membership-side{width:100%;padding:21px}
+  .contact{padding-top:58px;padding-bottom:58px}
+  .contact-detail{width:100%}
+  .footer-inner{display:grid;grid-template-columns:1fr auto;gap:14px}
+  .footer-inner>span{grid-column:1/-1;grid-row:2;font-size:10px;line-height:1.6}
+  .footer-admin-link{justify-self:end}
+  .footer button{grid-column:1/-1;justify-self:start}
+}
+@media(min-width:651px) and (max-width:900px){
+  .books-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .topbar{width:calc(100% - 36px)}
+  .nav-links{gap:12px}
+  .nav-links button{font-size:11px}
+  .header-contact{margin-right:12px}
+}
