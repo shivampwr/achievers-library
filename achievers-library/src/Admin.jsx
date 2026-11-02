@@ -969,13 +969,13 @@ function Admin() {
                   <thead>
                     <tr>
                       <th>Book ID</th><th>Book</th><th>Author</th>
-                      <th>Category</th><th>Total Copies</th><th>Available</th>
+                      <th>Category</th><th>Total Copies</th><th>Available</th><th>Actions</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     {books.length === 0 ? (
-                      <tr><td colSpan="6" className="empty-row">No books added yet.</td></tr>
+                      <tr><td colSpan="7" className="empty-row">No books added yet.</td></tr>
                     ) : books.map((b, index) => (
                       <tr key={b.id}>
                         <td><span className="seat-pill">#{index + 1}</span></td>
@@ -984,6 +984,16 @@ function Admin() {
                         <td>{b.category}</td>
                         <td>{b.total}</td>
                         <td>{b.available}</td>
+                        <td>
+                          <div className="row-actions">
+                            <button type="button" title="Edit book" aria-label={`Edit ${b.title}`} onClick={() => editBook(b)}>
+                              <Pencil size={15}/>
+                            </button>
+                            <button type="button" title="Delete book" aria-label={`Delete ${b.title}`} onClick={() => deleteBook(b)}>
+                              <Trash2 size={15}/>
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
